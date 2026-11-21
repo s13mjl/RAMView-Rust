@@ -203,9 +203,15 @@ fn run_shell_thread(
             Err(_) => return,
         };
 
-        let icon = match LoadIconW(None, IDI_APPLICATION) {
-            Ok(icon) => icon,
-            Err(_) => HICON(std::ptr::null_mut()),
+        let icon = match GetModuleHandleW(None) {
+            Ok(module) => LoadIconW(
+                HINSTANCE(module.0),
+                PCWSTR::from_raw(1 as *const u16),
+            )
+            .or_else(|_| LoadIconW(None, IDI_APPLICATION))
+            .unwrap_or(HICON(std::ptr::null_mut())),
+            Err(_) => LoadIconW(None, IDI_APPLICATION)
+                .unwrap_or(HICON(std::ptr::null_mut())),
         };
 
         let mut icon_data = NOTIFYICONDATAW {

@@ -220,6 +220,7 @@ impl RamViewApp {
             style: CS_HREDRAW | CS_VREDRAW,
             lpfnWndProc: Some(main_wndproc),
             hInstance: instance,
+            hIcon: app_icon(instance),
             hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
             lpszClassName: class_name,
             ..Default::default()
@@ -828,6 +829,7 @@ impl RamViewApp {
             style: CS_HREDRAW | CS_VREDRAW,
             lpfnWndProc: Some(settings_wndproc),
             hInstance: instance,
+            hIcon: app_icon(instance),
             hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
             lpszClassName: class_name,
             ..Default::default()
@@ -1419,6 +1421,11 @@ fn has_tooltip(id: &HitId) -> bool {
             | HitId::ToggleGhost
             | HitId::ToggleLock
     )
+}
+
+fn app_icon(instance: windows::Win32::Foundation::HINSTANCE) -> HICON {
+    // Icon resource id 1 is emitted by ramview.rc.
+    unsafe { LoadIconW(instance, PCWSTR::from_raw(1 as *const u16)).unwrap_or_default() }
 }
 
 fn loword(value: isize) -> u16 {

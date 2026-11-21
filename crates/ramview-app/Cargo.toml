@@ -11,6 +11,9 @@ description = "RAMView HUD binary: Win32 layered window with a GDI-rendered squa
 name = "RAMView"
 path = "src/main.rs"
 
+[build-dependencies]
+embed-resource = "2"
+
 [dependencies]
 ramview-core = { path = "../ramview-core" }
 ramview-platform = { path = "../ramview-platform" }

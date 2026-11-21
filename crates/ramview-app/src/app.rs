@@ -50,6 +50,8 @@ static APP_PTR: AtomicPtr<RamViewApp> = AtomicPtr::new(std::ptr::null_mut());
 
 const MSG_WAKE: u32 = WM_APP + 1;
 const WM_MOUSELEAVE: u32 = 0x02A3;
+const WM_NCUAHDRAWCAPTION: u32 = 0x00AE;
+const WM_NCUAHDRAWFRAME: u32 = 0x00AF;
 const EM_SETMARGINS: u32 = 0x00D3;
 const TIMER_TICK: usize = 1;
 const EDIT_ID: usize = 1001;
@@ -238,7 +240,6 @@ impl RamViewApp {
         let title = native_wide("RAM VIEW");
         let style = WS_POPUP
             | WS_THICKFRAME
-            | WS_CAPTION
             | WS_SYSMENU
             | WS_MINIMIZEBOX
             | WS_MAXIMIZEBOX
@@ -1151,14 +1152,10 @@ impl RamViewApp {
             WM_ERASEBKGND => Some(LRESULT(1)),
             // WS_THICKFRAME gives native resize borders; drop the non-client frame
             // so the HUD still paints edge to edge.
-            WM_NCCALCSIZE => {
-                if wparam.0 != 0 {
-                    Some(LRESULT(0))
-                } else {
-                    None
-                }
-            }
+            WM_NCCALCSIZE => Some(LRESULT(0)),
             WM_NCPAINT => Some(LRESULT(0)),
+            WM_NCACTIVATE => Some(LRESULT(1)),
+            WM_NCUAHDRAWCAPTION | WM_NCUAHDRAWFRAME => Some(LRESULT(0)),
             WM_NCHITTEST => {
                 let x = (lparam.0 as u32 & 0xFFFF) as i16 as i32;
                 let y = ((lparam.0 as u32 >> 16) & 0xFFFF) as i16 as i32;
@@ -1200,9 +1197,6 @@ impl RamViewApp {
                         ),
                         true,
                     );
-                } else {
-                    // Keep the window free of stale clipping regions.
-                    let _ = SetWindowRgn(hwnd, HRGN::default(), true);
                 }
                 self.recalc_layout();
                 Some(LRESULT(0))

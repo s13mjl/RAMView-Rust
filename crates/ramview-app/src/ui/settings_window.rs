@@ -193,6 +193,7 @@ pub fn paint(app: &mut RamViewApp, surface: &Surface) {
     let pad = s(scale, 20.0);
     let geo = geometry(scale, width, height, app.settings_scroll);
 
+    surface.begin_frame();
     surface.clear(CARD);
     surface.round_rect(
         RECT {

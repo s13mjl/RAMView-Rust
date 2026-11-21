@@ -433,7 +433,7 @@ impl RamViewApp {
         if self.edit.is_invalid() {
             return;
         }
-        self.edit_font = self.fonts.get(12.0, false);
+        self.edit_font = self.fonts.get(12.0, false).hfont;
         unsafe {
             SendMessageW(
                 self.edit,

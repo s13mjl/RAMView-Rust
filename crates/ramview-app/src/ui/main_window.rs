@@ -65,6 +65,9 @@ pub fn paint(app: &mut RamViewApp, surface: &Surface) -> Option<RECT> {
 }
 
 fn paint_impl(ctx: &mut PaintCtx) -> Option<RECT> {
+    ctx.surface.begin_frame();
+    ctx.surface.clear(HUD);
+
     let compact = ctx.vm.app_mode == APP_MODE_COMPACT_STRIP;
     let layout = layout::compute(
         ctx.surface.width,
@@ -73,8 +76,6 @@ fn paint_impl(ctx: &mut PaintCtx) -> Option<RECT> {
         compact,
         ctx.vm.click_through,
     );
-
-    ctx.surface.clear(HUD);
 
     let edit_rect = paint_header(ctx, &layout);
     if let Some(banner) = layout.banner {
@@ -582,7 +583,7 @@ fn paint_treemap_box(
         bottom: inner.top + icon_size,
     };
     let has_icon = icons.draw(
-        surface.hdc,
+        surface,
         &icon_key(process),
         process.icon_png_bytes.as_deref(),
         icon_rect,
@@ -763,7 +764,7 @@ fn paint_strip(ctx: &mut PaintCtx, canvas: RECT) {
                 bottom: rect.top + (item_height - scale_px(scale, 14.0)) / 2 + scale_px(scale, 14.0),
             };
             icons.draw(
-                surface.hdc,
+                surface,
                 &icon_key(process),
                 process.icon_png_bytes.as_deref(),
                 icon_rect,
@@ -1055,7 +1056,7 @@ fn paint_detail_modal(ctx: &mut PaintCtx, canvas: RECT) {
         bottom: inner.top + icon_size,
     };
     ctx.icons.draw(
-        ctx.surface.hdc,
+        ctx.surface,
         &icon_key(&process),
         process.icon_png_bytes.as_deref(),
         icon_rect,
@@ -1397,7 +1398,7 @@ fn paint_tooltip(ctx: &mut PaintCtx, canvas: RECT) {
 
     let mut width = 0;
     let mut height = padding * 2;
-    let mut measured: Vec<(String, windows::Win32::Graphics::Gdi::HFONT, Rgb, i32)> = Vec::new();
+    let mut measured: Vec<(String, crate::render::Font, Rgb, i32)> = Vec::new();
 
     for (index, line) in lines.iter().enumerate() {
         let font = ctx.fonts.get(line.size, line.bold);

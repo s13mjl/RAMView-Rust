@@ -24,9 +24,10 @@ use windows::Win32::Graphics::Gdi::{
     BeginPaint, CreateRoundRectRgn, CreateSolidBrush, DrawTextW, EndPaint, GetDC, InvalidateRect,
     ReleaseDC, SelectObject, SetBkColor, SetBkMode, SetTextColor, SetWindowRgn, UpdateWindow,
     DRAW_TEXT_FORMAT, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, HBRUSH, HDC, HFONT,
-    HGDIOBJ, PAINTSTRUCT, TRANSPARENT,
+    HGDIOBJ, HRGN, PAINTSTRUCT, TRANSPARENT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::Controls::SetWindowTheme;
 use windows::Win32::UI::HiDpi::{
     GetDpiForWindow, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
@@ -267,6 +268,10 @@ impl RamViewApp {
 
         self.update_layered_alpha(hwnd);
         self.dwm_rounded = try_round_window(hwnd);
+        if self.dwm_rounded {
+            // A region set during window creation would clip every later resize.
+            let _ = SetWindowRgn(hwnd, HRGN::default(), true);
+        }
         if self.vm.always_on_top {
             let _ = SetWindowPos(
                 hwnd,
@@ -1147,7 +1152,7 @@ impl RamViewApp {
                 let y = ((lparam.0 as u32 >> 16) & 0xFFFF) as i16 as i32;
                 let mut window = RECT::default();
                 let _ = GetWindowRect(hwnd, &mut window);
-                let edge = (6.0 * self.scale).round().max(4.0) as i32;
+                let edge = (8.0 * self.scale).round().max(6.0) as i32;
 
                 let on_left = x - window.left < edge;
                 let on_right = window.right - x < edge;
@@ -1183,6 +1188,9 @@ impl RamViewApp {
                         ),
                         true,
                     );
+                } else {
+                    // Keep the window free of stale clipping regions.
+                    let _ = SetWindowRgn(hwnd, HRGN::default(), true);
                 }
                 self.recalc_layout();
                 Some(LRESULT(0))

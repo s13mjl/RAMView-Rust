@@ -6,6 +6,8 @@ members = ["crates/ramview-core", "crates/ramview-platform", "crates/ramview-app
 version = "1.0.0"
 edition = "2021"
 license = "MIT"
+rust-version = "1.75"
+repository = "https://github.com/s13mjl/RAMView-Rust"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }

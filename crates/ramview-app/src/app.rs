@@ -170,6 +170,11 @@ impl RamViewApp {
         let mut app = RamViewApp::new();
         APP_PTR.store(&mut app as *mut RamViewApp, Ordering::Relaxed);
 
+        // The "Run at Windows startup" entry launches us with --minimized.
+        let start_minimized = std::env::args()
+            .skip(1)
+            .any(|argument| argument.eq_ignore_ascii_case("--minimized"));
+
         let hwnd = unsafe { app.create_main_window(instance) }?;
         app.hwnd = hwnd;
 
@@ -178,9 +183,16 @@ impl RamViewApp {
         app.center_window(720.0, 480.0);
         app.init_services();
 
+        if start_minimized {
+            app.window_hidden = true;
+        } else {
+            unsafe {
+                let _ = ShowWindow(hwnd, SW_SHOW);
+                let _ = UpdateWindow(hwnd);
+            }
+        }
+
         unsafe {
-            let _ = ShowWindow(hwnd, SW_SHOW);
-            let _ = UpdateWindow(hwnd);
             SetTimer(hwnd, TIMER_TICK, 16, None);
         }
 

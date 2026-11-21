@@ -3,6 +3,9 @@ name = "ramview-app"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "RAMView HUD binary: Win32 layered window with a GDI-rendered squarified treemap."
 
 [[bin]]
 name = "RAMView"

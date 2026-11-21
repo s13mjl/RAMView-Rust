@@ -3,6 +3,9 @@ name = "ramview-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "Domain logic for RAMView: models, squarified treemap, layout weights, filters and hotkey parsing."
 
 [dependencies]
 serde.workspace = true

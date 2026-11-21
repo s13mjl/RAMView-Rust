@@ -5,29 +5,26 @@ use std::mem::size_of;
 use std::sync::OnceLock;
 
 use windows::core::PCWSTR;
-use windows::Win32::Foundation::RECT;
+use windows::Win32::Foundation::{RECT, SIZE};
 use windows::Win32::Graphics::Gdi::{
-    BitBlt, CreateCompatibleDC, CreateDIBSection, CreateFontW, DeleteDC, DeleteObject, SelectObject,
-    BITMAPINFO, BITMAPINFOHEADER, BI_RGB, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, DIB_RGB_COLORS,
-    DEFAULT_CHARSET, DEFAULT_PITCH, FF_DONTCARE, HBITMAP, HDC, HFONT, HGDIOBJ, OUT_DEFAULT_PRECIS,
-    SRCCOPY,
+    BitBlt, CreateCompatibleDC, CreateDIBSection, CreateFontW, DeleteDC, DeleteObject, DrawTextW,
+    GetTextExtentPoint32W, IntersectClipRect, RestoreDC, SaveDC, SelectObject, SetBkMode,
+    SetTextColor, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS,
+    DIB_RGB_COLORS, DEFAULT_CHARSET, DEFAULT_PITCH, DRAW_TEXT_FORMAT, DT_CENTER, DT_END_ELLIPSIS,
+    DT_LEFT, DT_NOPREFIX, DT_RIGHT, DT_SINGLELINE, DT_VCENTER, DT_WORDBREAK, FF_DONTCARE, HBITMAP,
+    HDC, HFONT, HGDIOBJ, OUT_DEFAULT_PRECIS, SRCCOPY, TRANSPARENT,
 };
 use windows::Win32::Graphics::GdiPlus::{
-    GdipAddPathArc, GdipClosePathFigure, GdipCreateBitmapFromScan0, GdipCreateFont,
-    GdipCreateFontFamilyFromName, GdipCreateFromHDC, GdipCreateImageAttributes, GdipCreatePath,
-    GdipCreatePen1, GdipCreateSolidFill, GdipCreateStringFormat, GdipDeleteBrush, GdipDeleteFont,
-    GdipDeleteFontFamily, GdipDeleteGraphics, GdipDeletePath, GdipDeletePen,
-    GdipDeleteStringFormat, GdipDisposeImage, GdipDisposeImageAttributes, GdipDrawEllipse,
-    GdipDrawImageRectRectI, GdipDrawLine, GdipDrawPath, GdipDrawString, GdipFillEllipse,
-    GdipFillPath, GdipFillRectangle, GdipMeasureString, GdipRestoreGraphics, GdipSaveGraphics,
-    GdipSetClipRect, GdipSetImageAttributesColorMatrix, GdipSetInterpolationMode,
-    GdipSetPenLineCap197819, GdipSetSmoothingMode, GdipSetStringFormatAlign,
-    GdipSetStringFormatFlags, GdipSetStringFormatHotkeyPrefix, GdipSetStringFormatLineAlign,
-    GdipSetStringFormatTrimming, GdipSetTextRenderingHint, GdiplusStartup, GdiplusStartupInput,
-    ColorAdjustType, ColorMatrix, ColorMatrixFlags, CombineMode, DashCap, FillMode, GpBitmap,
-    GpBrush, GpFont, GpFontFamily, GpGraphics, GpImage, GpImageAttributes, GpPath, GpPen,
-    GpSolidFill, GpStringFormat, InterpolationMode, LineCap, RectF, SmoothingMode, StringAlignment,
-    StringTrimming, TextRenderingHint, Unit,
+    GdipAddPathArc, GdipClosePathFigure, GdipCreateBitmapFromScan0, GdipCreateFromHDC,
+    GdipCreateImageAttributes, GdipCreatePath, GdipCreatePen1, GdipCreateSolidFill, GdipDeleteBrush,
+    GdipDeleteGraphics, GdipDeletePath, GdipDeletePen, GdipDisposeImage,
+    GdipDisposeImageAttributes, GdipDrawEllipse, GdipDrawImageRectRectI, GdipDrawLine, GdipDrawPath,
+    GdipFillEllipse, GdipFillPath, GdipFillRectangle, GdipFlush, GdipRestoreGraphics,
+    GdipSaveGraphics, GdipSetClipRect, GdipSetImageAttributesColorMatrix,
+    GdipSetInterpolationMode, GdipSetPenLineCap197819, GdipSetSmoothingMode, GdiplusStartup,
+    GdiplusStartupInput, ColorAdjustType, ColorMatrix, ColorMatrixFlags, CombineMode, DashCap,
+    FillMode, FlushIntention, GpBitmap, GpBrush, GpGraphics, GpImage, GpImageAttributes, GpPath,
+    GpPen, GpSolidFill, InterpolationMode, LineCap, SmoothingMode, Unit,
 };
 
 use crate::native_wide;
@@ -143,18 +140,6 @@ impl TextOpts {
             wrap: true,
         }
     }
-
-    fn key(&self) -> u32 {
-        let align = match self.halign {
-            HAlign::Left => 0,
-            HAlign::Center => 1,
-            HAlign::Right => 2,
-        };
-        align
-            | ((self.vcenter as u32) << 2)
-            | ((self.ellipsis as u32) << 3)
-            | ((self.wrap as u32) << 4)
-    }
 }
 
 fn ensure_gdiplus() {
@@ -172,11 +157,17 @@ fn ensure_gdiplus() {
     });
 }
 
-/// Opaque GDI+ font handle plus the GDI font used by the native EDIT control.
+/// GDI font (ClearType text plus GDI+ shapes on the same DIB).
 #[derive(Clone, Copy)]
 pub struct Font {
     pub hfont: HFONT,
-    gp: *mut GpFont,
+}
+
+/// Saved GDI + GDI+ state for clipped painting.
+#[derive(Clone, Copy)]
+pub struct SurfaceState {
+    gdip: u32,
+    gdi: i32,
 }
 
 /// 32bpp top-down DIB with a memory DC, painted through GDI+ (anti-aliased).
@@ -189,7 +180,6 @@ pub struct Surface {
     graphics: *mut GpGraphics,
     brushes: RefCell<HashMap<u32, *mut GpSolidFill>>,
     pens: RefCell<HashMap<(u32, u32, u8), *mut GpPen>>,
-    formats: RefCell<HashMap<u32, *mut GpStringFormat>>,
 }
 
 impl Surface {
@@ -235,9 +225,7 @@ impl Surface {
             }
 
             let _ = GdipSetSmoothingMode(graphics, SmoothingMode(4)); // AntiAlias
-            let _ = GdipSetTextRenderingHint(graphics, TextRenderingHint(3)); // AntiAliasGridFit
             let _ = GdipSetInterpolationMode(graphics, InterpolationMode(6)); // HighQualityBicubic
-            let _ = GdipSetSmoothingMode(graphics, SmoothingMode(4));
 
             Some(Self {
                 hdc,
@@ -248,7 +236,6 @@ impl Surface {
                 graphics,
                 brushes: RefCell::new(HashMap::new()),
                 pens: RefCell::new(HashMap::new()),
-                formats: RefCell::new(HashMap::new()),
             })
         }
     }
@@ -302,37 +289,6 @@ impl Surface {
         }
         self.pens.borrow_mut().insert(key, pen);
         pen
-    }
-
-    fn format(&self, opts: TextOpts) -> *mut GpStringFormat {
-        let key = opts.key();
-        if let Some(format) = self.formats.borrow().get(&key) {
-            return *format;
-        }
-
-        let mut format: *mut GpStringFormat = std::ptr::null_mut();
-        unsafe {
-            let _ = GdipCreateStringFormat(0, 0, &mut format);
-            let align = match opts.halign {
-                HAlign::Left => 0,
-                HAlign::Center => 1,
-                HAlign::Right => 2,
-            };
-            let _ = GdipSetStringFormatAlign(format, StringAlignment(align));
-            let _ = GdipSetStringFormatLineAlign(
-                format,
-                StringAlignment(if opts.vcenter { 1 } else { 0 }),
-            );
-            if opts.ellipsis {
-                let _ = GdipSetStringFormatTrimming(format, StringTrimming(3));
-            }
-            if !opts.wrap {
-                let _ = GdipSetStringFormatFlags(format, 0x1000); // NoWrap
-            }
-            let _ = GdipSetStringFormatHotkeyPrefix(format, 0);
-        }
-        self.formats.borrow_mut().insert(key, format);
-        format
     }
 
     pub fn fill(&self, rect: RECT, color: Rgb) {
@@ -482,25 +438,34 @@ impl Surface {
         if text.is_empty() {
             return;
         }
-        let wide: Vec<u16> = text.encode_utf16().collect();
-        let layout = RectF {
-            X: rect.left as f32,
-            Y: rect.top as f32,
-            Width: (rect.right - rect.left) as f32,
-            Height: (rect.bottom - rect.top) as f32,
-        };
-        let format = self.format(opts);
-        let brush = self.brush(color);
+
+        let mut flags = DT_NOPREFIX.0;
+        match opts.halign {
+            HAlign::Left => flags |= DT_LEFT.0,
+            HAlign::Center => flags |= DT_CENTER.0,
+            HAlign::Right => flags |= DT_RIGHT.0,
+        }
+        if opts.wrap {
+            flags |= DT_WORDBREAK.0;
+        } else {
+            flags |= DT_SINGLELINE.0;
+            if opts.vcenter {
+                flags |= DT_VCENTER.0;
+            }
+            if opts.ellipsis {
+                flags |= DT_END_ELLIPSIS.0;
+            }
+        }
+
+        let mut buffer: Vec<u16> = text.encode_utf16().collect();
+        let mut rect = rect;
         unsafe {
-            let _ = GdipDrawString(
-                self.graphics,
-                PCWSTR::from_raw(wide.as_ptr()),
-                wide.len() as i32,
-                font.gp,
-                &layout,
-                format,
-                brush as *const GpBrush,
-            );
+            // Commit pending GDI+ shapes before switching to GDI ClearType text.
+            let _ = GdipFlush(self.graphics, FlushIntention(1));
+            SelectObject(self.hdc, HGDIOBJ(font.hfont.0));
+            SetBkMode(self.hdc, TRANSPARENT);
+            SetTextColor(self.hdc, color.colorref());
+            DrawTextW(self.hdc, &mut buffer, &mut rect, DRAW_TEXT_FORMAT(flags));
         }
     }
 
@@ -508,83 +473,46 @@ impl Surface {
         if text.is_empty() {
             return 0;
         }
-        let wide: Vec<u16> = text.encode_utf16().collect();
-        let layout = RectF {
-            X: 0.0,
-            Y: 0.0,
-            Width: 10000.0,
-            Height: 1000.0,
-        };
-        let format = self.format(TextOpts {
-            halign: HAlign::Left,
-            vcenter: false,
-            ellipsis: false,
-            wrap: false,
-        });
-        let mut bounds = RectF::default();
+        let buffer: Vec<u16> = text.encode_utf16().collect();
+        let mut size = SIZE::default();
         unsafe {
-            let _ = GdipMeasureString(
-                self.graphics,
-                PCWSTR::from_raw(wide.as_ptr()),
-                wide.len() as i32,
-                font.gp,
-                &layout,
-                format,
-                &mut bounds,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-            );
+            SelectObject(self.hdc, HGDIOBJ(font.hfont.0));
+            let _ = GetTextExtentPoint32W(self.hdc, &buffer, &mut size);
         }
-        bounds.Width.ceil() as i32
+        size.cx
     }
 
     pub fn text_height(&self, font: Font) -> i32 {
-        let wide: Vec<u16> = "Ag".encode_utf16().collect();
-        let layout = RectF {
-            X: 0.0,
-            Y: 0.0,
-            Width: 1000.0,
-            Height: 1000.0,
-        };
-        let format = self.format(TextOpts {
-            halign: HAlign::Left,
-            vcenter: false,
-            ellipsis: false,
-            wrap: false,
-        });
-        let mut bounds = RectF::default();
+        let buffer: Vec<u16> = "Ag".encode_utf16().collect();
+        let mut size = SIZE::default();
         unsafe {
-            let _ = GdipMeasureString(
-                self.graphics,
-                PCWSTR::from_raw(wide.as_ptr()),
-                wide.len() as i32,
-                font.gp,
-                &layout,
-                format,
-                &mut bounds,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-            );
+            SelectObject(self.hdc, HGDIOBJ(font.hfont.0));
+            let _ = GetTextExtentPoint32W(self.hdc, &buffer, &mut size);
         }
-        bounds.Height.ceil() as i32
+        size.cy
     }
 
-    pub fn save(&self) -> u32 {
-        let mut state = 0u32;
+    pub fn save(&self) -> SurfaceState {
+        let mut gdip = 0u32;
         unsafe {
-            let _ = GdipSaveGraphics(self.graphics, &mut state);
+            let _ = GdipSaveGraphics(self.graphics, &mut gdip);
+            SurfaceState {
+                gdip,
+                gdi: SaveDC(self.hdc),
+            }
         }
-        state
     }
 
-    pub fn restore(&self, state: u32) {
+    pub fn restore(&self, state: SurfaceState) {
         unsafe {
-            let _ = GdipRestoreGraphics(self.graphics, state);
+            let _ = RestoreDC(self.hdc, state.gdi);
+            let _ = GdipRestoreGraphics(self.graphics, state.gdip);
         }
     }
 
     pub fn clip(&self, rect: RECT) {
         unsafe {
+            let _ = IntersectClipRect(self.hdc, rect.left, rect.top, rect.right, rect.bottom);
             let _ = GdipSetClipRect(
                 self.graphics,
                 rect.left as f32,
@@ -617,9 +545,6 @@ impl Drop for Surface {
     fn drop(&mut self) {
         unsafe {
             self.begin_frame();
-            for (_, format) in self.formats.borrow_mut().drain() {
-                let _ = GdipDeleteStringFormat(format);
-            }
             let _ = GdipDeleteGraphics(self.graphics);
             SelectObject(self.hdc, self.old_bitmap);
             let _ = DeleteObject(HGDIOBJ(self.bitmap.0));
@@ -632,7 +557,6 @@ pub struct FontCache {
     scale: f32,
     fonts: HashMap<(i32, bool), Font>,
     icon_fonts: HashMap<i32, Font>,
-    families: HashMap<&'static str, *mut GpFontFamily>,
 }
 
 impl FontCache {
@@ -642,7 +566,6 @@ impl FontCache {
             scale,
             fonts: HashMap::new(),
             icon_fonts: HashMap::new(),
-            families: HashMap::new(),
         }
     }
 
@@ -653,53 +576,21 @@ impl FontCache {
         }
     }
 
-    fn family(&mut self, face: &'static str) -> *mut GpFontFamily {
-        if let Some(family) = self.families.get(face) {
-            return *family;
-        }
-        let name = native_wide(face);
-        let mut family: *mut GpFontFamily = std::ptr::null_mut();
-        unsafe {
-            let _ = GdipCreateFontFamilyFromName(
-                PCWSTR::from_raw(name.as_ptr()),
-                std::ptr::null_mut(),
-                &mut family,
-            );
-        }
-        self.families.insert(face, family);
-        family
-    }
-
     fn clear(&mut self) {
         for (_, font) in self.fonts.drain() {
             unsafe {
                 let _ = DeleteObject(HGDIOBJ(font.hfont.0));
-                if !font.gp.is_null() {
-                    let _ = GdipDeleteFont(font.gp);
-                }
             }
         }
         for (_, font) in self.icon_fonts.drain() {
             unsafe {
                 let _ = DeleteObject(HGDIOBJ(font.hfont.0));
-                if !font.gp.is_null() {
-                    let _ = GdipDeleteFont(font.gp);
-                }
-            }
-        }
-        for (_, family) in self.families.drain() {
-            unsafe {
-                if !family.is_null() {
-                    let _ = GdipDeleteFontFamily(family);
-                }
             }
         }
     }
 
     fn create(&mut self, face: &'static str, size: f32, bold: bool) -> Font {
         let px = ((size * self.scale).round() as i32).max(8);
-        let family = self.family(face);
-
         let gdi_face = native_wide(face);
         let hfont = unsafe {
             CreateFontW(
@@ -720,18 +611,7 @@ impl FontCache {
             )
         };
 
-        let mut gp: *mut GpFont = std::ptr::null_mut();
-        unsafe {
-            let _ = GdipCreateFont(
-                family,
-                px as f32,
-                if bold { 1 } else { 0 },
-                Unit(2),
-                &mut gp,
-            );
-        }
-
-        Font { hfont, gp }
+        Font { hfont }
     }
 
     /// `size` is a WPF-style DIP em size.

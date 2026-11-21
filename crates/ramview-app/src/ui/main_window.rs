@@ -306,21 +306,21 @@ fn paint_header(ctx: &mut PaintCtx, layout: &layout::Layout) -> Option<RECT> {
             right: search_right,
             bottom: center_y + s(14.0),
         };
-        let background = over(HUD, WHITE, if *edit_focus { 0x25 } else { 0x1A });
+        let background = over(HUD, WHITE, if *edit_focus { 0x28 } else { 0x20 });
         let border = if *edit_focus {
             ACCENT
         } else {
-            over(HUD, WHITE, 0x30)
+            over(HUD, WHITE, 0x38)
         };
         surface.round_rect(box_rect, s(6.0), Some(background), Some(border));
 
-        paint_search_icon(surface, scale, box_rect.left + s(8.0), center_y);
+        paint_search_icon(surface, scale, box_rect.left + s(10.0), center_y);
 
         edit_rect = Some(RECT {
-            left: box_rect.left + s(26.0),
-            top: box_rect.top + s(3.0),
+            left: box_rect.left + s(28.0),
+            top: box_rect.top + s(1.0),
             right: box_rect.right - s(8.0),
-            bottom: box_rect.bottom - s(3.0),
+            bottom: box_rect.bottom - s(1.0),
         });
     }
 

@@ -48,6 +48,12 @@ impl Rgb {
         0xFF00_0000 | ((self.r as u32) << 16) | ((self.g as u32) << 8) | (self.b as u32)
     }
 
+    pub fn colorref(self) -> windows::Win32::Foundation::COLORREF {
+        windows::Win32::Foundation::COLORREF(
+            self.r as u32 | ((self.g as u32) << 8) | ((self.b as u32) << 16),
+        )
+    }
+
     pub fn mix(self, fg: Rgb, alpha: f32) -> Rgb {
         let alpha = alpha.clamp(0.0, 1.0);
         Rgb {

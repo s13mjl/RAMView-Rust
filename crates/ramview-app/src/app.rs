@@ -18,16 +18,17 @@ use windows::Win32::Foundation::{
 };
 use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_USE_IMMERSIVE_DARK_MODE};
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, CreateRoundRectRgn, CreateSolidBrush, EndPaint, InvalidateRect, SetBkColor,
-    SetTextColor, SetWindowRgn, UpdateWindow, HBRUSH, HDC, HFONT, PAINTSTRUCT,
+    BeginPaint, CreateRoundRectRgn, CreateSolidBrush, DrawTextW, EndPaint, GetDC, InvalidateRect,
+    ReleaseDC, SelectObject, SetBkColor, SetBkMode, SetTextColor, SetWindowRgn, UpdateWindow,
+    DRAW_TEXT_FORMAT, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, HBRUSH, HDC, HFONT,
+    HGDIOBJ, PAINTSTRUCT, TRANSPARENT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::UI::Controls::EM_SETCUEBANNER;
 use windows::Win32::UI::HiDpi::{
     GetDpiForWindow, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    ReleaseCapture, SetCapture, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT,
+    GetFocus, ReleaseCapture, SetCapture, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -45,6 +46,7 @@ static APP_PTR: AtomicPtr<RamViewApp> = AtomicPtr::new(std::ptr::null_mut());
 
 const MSG_WAKE: u32 = WM_APP + 1;
 const WM_MOUSELEAVE: u32 = 0x02A3;
+const EM_SETMARGINS: u32 = 0x00D3;
 const TIMER_TICK: usize = 1;
 const EDIT_ID: usize = 1001;
 const MAIN_CLASS: &str = "RAMViewMainWindow";
@@ -410,14 +412,22 @@ impl RamViewApp {
             self.edit = edit;
             self.update_edit_font();
 
-            let placeholder = native_wide("Filter processes...");
+            // Native margins inside the rounded search field.
             unsafe {
                 SendMessageW(
                     edit,
-                    EM_SETCUEBANNER,
-                    WPARAM(0),
-                    LPARAM(placeholder.as_ptr() as isize),
+                    EM_SETMARGINS,
+                    WPARAM(3), // EC_LEFTMARGIN | EC_RIGHTMARGIN
+                    LPARAM(((6 << 16) | 2) as isize),
                 );
+            }
+
+            // Subclass to paint our own placeholder (keeps the native IME/caret).
+            unsafe {
+                let edit_proc: unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT =
+                    edit_wndproc;
+                let old = SetWindowLongPtrW(edit, GWLP_WNDPROC, edit_proc as usize as isize);
+                let _ = SetWindowLongPtrW(edit, GWLP_USERDATA, old);
             }
 
             self.edit_brush = unsafe { CreateSolidBrush(Self::edit_background(false)) };
@@ -425,8 +435,22 @@ impl RamViewApp {
     }
 
     fn edit_background(focused: bool) -> COLORREF {
-        // over(#090D14, white, 0x1A / 0x25) precomposited to COLORREF (0x00BBGGRR).
-        COLORREF(if focused { 0x0036_302D } else { 0x002C_2622 })
+        // over(#090D14, white, 0x20 / 0x28), precomposited for the opaque EDIT brush.
+        if focused {
+            crate::render::over(
+                crate::render::HUD,
+                crate::render::WHITE,
+                0x28,
+            )
+            .colorref()
+        } else {
+            crate::render::over(
+                crate::render::HUD,
+                crate::render::WHITE,
+                0x20,
+            )
+            .colorref()
+        }
     }
 
     fn update_edit_font(&mut self) {
@@ -1258,7 +1282,10 @@ impl RamViewApp {
                                 windows::Win32::Graphics::Gdi::InvalidateRect(hwnd, None, false);
                             let _ = InvalidateRect(self.edit, None, true);
                         }
-                        0x0300 => self.update_search(),
+                        0x0300 => {
+                            self.update_search();
+                            let _ = InvalidateRect(self.edit, None, true);
+                        }
                         _ => {}
                     }
                 }
@@ -1426,6 +1453,57 @@ fn has_tooltip(id: &HitId) -> bool {
 fn app_icon(instance: windows::Win32::Foundation::HINSTANCE) -> HICON {
     // Icon resource id 1 is emitted by ramview.rc.
     unsafe { LoadIconW(instance, PCWSTR::from_raw(1 as *const u16)).unwrap_or_default() }
+}
+
+unsafe extern "system" fn edit_wndproc(
+    hwnd: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    let old_raw = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+    let old_proc: Option<unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT> =
+        std::mem::transmute(old_raw);
+
+    let result = match old_proc {
+        Some(proc) => CallWindowProcW(Some(proc), hwnd, message, wparam, lparam),
+        None => DefWindowProcW(hwnd, message, wparam, lparam),
+    };
+
+    // Draw the placeholder ourselves so it matches the HUD typography.
+    if message == WM_PAINT && GetWindowTextLengthW(hwnd) == 0 && GetFocus() != hwnd {
+        let hdc = GetDC(hwnd);
+        if !hdc.is_invalid() {
+            let mut rect = RECT::default();
+            let _ = GetClientRect(hwnd, &mut rect);
+            rect.left += 2;
+            rect.right -= 4;
+
+            let font_handle = SendMessageW(hwnd, WM_GETFONT, WPARAM(0), LPARAM(0)).0;
+            if font_handle != 0 {
+                SelectObject(hdc, HGDIOBJ(font_handle as *mut core::ffi::c_void));
+            }
+
+            SetBkMode(hdc, TRANSPARENT);
+            SetTextColor(hdc, COLORREF(0x008B_7464));
+            let mut text = native_wide("Filter processes...");
+            DrawTextW(
+                hdc,
+                &mut text,
+                &mut rect,
+                DRAW_TEXT_FORMAT(
+                    DT_SINGLELINE.0 | DT_VCENTER.0 | DT_LEFT.0 | DT_NOPREFIX.0,
+                ),
+            );
+            let _ = ReleaseDC(hwnd, hdc);
+        }
+    }
+
+    if message == WM_SETFOCUS || message == WM_KILLFOCUS {
+        let _ = InvalidateRect(hwnd, None, true);
+    }
+
+    result
 }
 
 fn loword(value: isize) -> u16 {

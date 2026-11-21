@@ -398,16 +398,43 @@ fn paint_coffee_icon(surface: &Surface, scale: f32, rect: RECT) {
 }
 
 fn paint_minimize_icon(surface: &Surface, scale: f32, rect: RECT) {
-    let (cx, cy) = button_center(rect);
-    let half = scale_px(scale, 5.0);
-    surface.line(cx - half, cy, cx + half, cy, TEXT_SECONDARY, 1);
+    let cx = (rect.left as f32 + rect.right as f32) * 0.5;
+    let cy = (rect.top as f32 + rect.bottom as f32) * 0.5;
+    let half = scale_px(scale, 5.0) as f32;
+    // +0.5 keeps a 1px horizontal stroke crisp instead of straddling two rows.
+    surface.line_f32(
+        cx - half,
+        cy + 0.5,
+        cx + half,
+        cy + 0.5,
+        TEXT_SECONDARY,
+        (1.2 * scale).max(1.0),
+    );
 }
 
 fn paint_close_icon(surface: &Surface, scale: f32, rect: RECT) {
-    let (cx, cy) = button_center(rect);
-    let half = scale_px(scale, 4.0);
-    surface.line(cx - half, cy - half, cx + half, cy + half, TEXT_SECONDARY, 1);
-    surface.line(cx - half, cy + half, cx + half, cy - half, TEXT_SECONDARY, 1);
+    let cx = (rect.left as f32 + rect.right as f32) * 0.5;
+    let cy = (rect.top as f32 + rect.bottom as f32) * 0.5;
+    let half = scale_px(scale, 4.5) as f32;
+    let width = (1.2 * scale).max(1.0);
+
+    // Symmetric around the exact center with equal lengths and round caps.
+    surface.line_f32(
+        cx - half,
+        cy - half,
+        cx + half,
+        cy + half,
+        TEXT_SECONDARY,
+        width,
+    );
+    surface.line_f32(
+        cx - half,
+        cy + half,
+        cx + half,
+        cy - half,
+        TEXT_SECONDARY,
+        width,
+    );
 }
 
 fn paint_search_icon(surface: &Surface, scale: f32, left: i32, center_y: i32) {

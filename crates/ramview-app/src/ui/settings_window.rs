@@ -241,10 +241,12 @@ pub fn paint(app: &mut RamViewApp, surface: &Surface) {
         }),
         Some(over(CARD, WHITE, 0x30)),
     );
-    let cross = s(scale, 4.0);
-    let (cx, cy) = ((close.left + close.right) / 2, (close.top + close.bottom) / 2);
-    surface.line(cx - cross, cy - cross, cx + cross, cy + cross, TEXT_PRIMARY, 1);
-    surface.line(cx - cross, cy + cross, cx + cross, cy - cross, TEXT_PRIMARY, 1);
+    let cross = s(scale, 4.0) as f32;
+    let cx = (close.left as f32 + close.right as f32) * 0.5;
+    let cy = (close.top as f32 + close.bottom as f32) * 0.5;
+    let cross_width = (1.2 * scale).max(1.0);
+    surface.line_f32(cx - cross, cy - cross, cx + cross, cy + cross, TEXT_PRIMARY, cross_width);
+    surface.line_f32(cx - cross, cy + cross, cx + cross, cy - cross, TEXT_PRIMARY, cross_width);
     app.settings_hits.push(HitRegion {
         rect: close,
         id: HitId::SettingsClose,

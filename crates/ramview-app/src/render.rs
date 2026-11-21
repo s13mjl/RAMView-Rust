@@ -443,7 +443,6 @@ impl Surface {
         }
     }
 
-    #[allow(dead_code)]
     pub fn line_f32(&self, x1: f32, y1: f32, x2: f32, y2: f32, color: Rgb, width: f32) {
         let pen = self.pen(color, (width.max(0.1) * 10.0) as u32, true);
         unsafe {

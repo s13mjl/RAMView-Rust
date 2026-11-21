@@ -1,11 +1,40 @@
-use windows::Win32::Foundation::{HANDLE, HWND};
+﻿use windows::Win32::Foundation::{HANDLE, HGLOBAL, HWND};
 use windows::Win32::System::DataExchange::{
-    CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
+    CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard, SetClipboardData,
 };
 use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
 use windows::Win32::System::Ole::CF_UNICODETEXT;
 
-/// Sets CF_UNICODETEXT on the clipboard (WPF Clipboard.SetText equivalent).
+/// Reads CF_UNICODETEXT from the clipboard.
+pub fn get_text(hwnd: HWND) -> Option<String> {
+    unsafe {
+        if OpenClipboard(hwnd).is_err() {
+            return None;
+        }
+
+        let handle = GetClipboardData(CF_UNICODETEXT.0 as u32).ok()?;
+        if handle.is_invalid() {
+            let _ = CloseClipboard();
+            return None;
+        }
+
+        let pointer = GlobalLock(HGLOBAL(handle.0)) as *const u16;
+        let mut text = None;
+        if !pointer.is_null() {
+            let mut length = 0usize;
+            while *pointer.add(length) != 0 {
+                length += 1;
+            }
+            let units = std::slice::from_raw_parts(pointer, length);
+            text = Some(String::from_utf16_lossy(units));
+            let _ = GlobalUnlock(HGLOBAL(handle.0));
+        }
+
+        let _ = CloseClipboard();
+        text
+    }
+}
+
 pub fn set_text(hwnd: HWND, text: &str) {
     unsafe {
         if OpenClipboard(hwnd).is_err() {
@@ -21,8 +50,7 @@ pub fn set_text(hwnd: HWND, text: &str) {
             if !pointer.is_null() {
                 std::ptr::copy_nonoverlapping(units.as_ptr(), pointer, units.len());
                 let _ = GlobalUnlock(handle);
-                let hglobal: HANDLE = HANDLE(handle.0);
-                let _ = SetClipboardData(CF_UNICODETEXT.0 as u32, hglobal);
+                let _ = SetClipboardData(CF_UNICODETEXT.0 as u32, HANDLE(handle.0));
             }
         }
 

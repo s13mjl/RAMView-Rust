@@ -21,25 +21,27 @@ use windows::Win32::Graphics::Dwm::{
     DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
 };
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, CreateRoundRectRgn, CreateSolidBrush, DrawTextW, EndPaint, GetDC, InvalidateRect,
-    ReleaseDC, SelectObject, SetBkColor, SetBkMode, SetTextColor, SetWindowRgn, UpdateWindow,
-    DRAW_TEXT_FORMAT, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, HBRUSH, HDC, HFONT,
-    HGDIOBJ, HRGN, PAINTSTRUCT, TRANSPARENT,
+    BeginPaint, ClientToScreen, CreateRoundRectRgn, EndPaint, InvalidateRect, SetWindowRgn,
+    UpdateWindow, HRGN, PAINTSTRUCT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::UI::Controls::SetWindowTheme;
 use windows::Win32::UI::HiDpi::{
     GetDpiForWindow, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
+use windows::Win32::UI::Input::Ime::{
+    ImmGetCompositionStringW, ImmGetContext, ImmReleaseContext, ImmSetCompositionWindow,
+    COMPOSITIONFORM, CFS_POINT, GCS_COMPSTR, GCS_RESULTSTR, IME_COMPOSITION_STRING,
+};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetFocus, ReleaseCapture, SetCapture, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT,
+    GetKeyState, ReleaseCapture, SetCapture, SetFocus, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-use crate::hit::{hit_test, HitId, HitRegion};
+use crate::hit::{contains, hit_test, HitId, HitRegion};
 use crate::layout;
 use crate::native_wide;
 use crate::render::{FontCache, IconCache, Surface};
+use crate::search::SearchField;
 use crate::treemap::{key_for, AnimatedTreemap};
 use crate::ui::main_window;
 use crate::ui::settings_window::{self, SettingsForm};
@@ -52,11 +54,24 @@ const MSG_WAKE: u32 = WM_APP + 1;
 const WM_MOUSELEAVE: u32 = 0x02A3;
 const WM_NCUAHDRAWCAPTION: u32 = 0x00AE;
 const WM_NCUAHDRAWFRAME: u32 = 0x00AF;
-const EM_SETMARGINS: u32 = 0x00D3;
 const TIMER_TICK: usize = 1;
-const EDIT_ID: usize = 1001;
 const MAIN_CLASS: &str = "RAMViewMainWindow";
 const SETTINGS_CLASS: &str = "RAMViewSettingsWindow";
+
+const VK_BACK: u32 = 0x08;
+const VK_RETURN: u32 = 0x0D;
+const VK_SHIFT: i32 = 0x10;
+const VK_CONTROL: i32 = 0x11;
+const VK_ESCAPE: u32 = 0x1B;
+const VK_END: u32 = 0x23;
+const VK_HOME: u32 = 0x24;
+const VK_LEFT: u32 = 0x25;
+const VK_RIGHT: u32 = 0x27;
+const VK_DELETE: u32 = 0x2E;
+const KEY_A: u32 = 0x41;
+const KEY_C: u32 = 0x43;
+const KEY_V: u32 = 0x56;
+const KEY_X: u32 = 0x58;
 
 pub struct TerminateResult {
     pub process_name: String,
@@ -85,11 +100,8 @@ pub struct RamViewApp {
     hover_since: Instant,
     pub pressed: Option<HitId>,
     pub cursor: POINT,
-    pub edit_focus: bool,
-    pub edit: HWND,
-    pub edit_brush: HBRUSH,
-    pub edit_font: HFONT,
-    edit_rect: RECT,
+    pub search: SearchField,
+    pub caret_phase: bool,
 
     pub settings_hwnd: HWND,
     pub settings_surface: Option<Surface>,
@@ -140,11 +152,8 @@ impl RamViewApp {
             hover_since: Instant::now(),
             pressed: None,
             cursor: POINT::default(),
-            edit_focus: false,
-            edit: HWND::default(),
-            edit_brush: HBRUSH::default(),
-            edit_font: HFONT::default(),
-            edit_rect: RECT::default(),
+            search: SearchField::default(),
+            caret_phase: true,
             settings_hwnd: HWND::default(),
             settings_surface: None,
             settings_hits: Vec::new(),
@@ -189,7 +198,6 @@ impl RamViewApp {
         app.hwnd = hwnd;
 
         app.refresh_scale();
-        app.create_edit(instance);
         app.center_window(720.0, 480.0);
         app.init_services();
 
@@ -301,7 +309,6 @@ impl RamViewApp {
         self.fonts.set_scale(scale);
         self.surface = None;
         self.settings_surface = None;
-        self.update_edit_font();
         self.recalc_layout();
     }
 
@@ -386,145 +393,12 @@ impl RamViewApp {
             worker.shutdown();
         }
         self.api_server.take();
-
-        unsafe {
-            if !self.edit.is_invalid() {
-                let _ = DestroyWindow(self.edit);
-                self.edit = HWND::default();
-            }
-            if !self.edit_brush.is_invalid() {
-                let _ = windows::Win32::Graphics::Gdi::DeleteObject(windows::Win32::Graphics::Gdi::HGDIOBJ(
-                    self.edit_brush.0,
-                ));
-                self.edit_brush = HBRUSH::default();
-            }
-        }
     }
 
-    // ---------------------------------------------------------------- search box
+    // ---------------------------------------------------------------- search
 
-    fn create_edit(&mut self, instance: windows::Win32::Foundation::HINSTANCE) {
-        let class = native_wide("EDIT");
-        let empty = native_wide("");
-        let style = windows::Win32::UI::WindowsAndMessaging::WINDOW_STYLE(
-            WS_CHILD.0 | WS_VISIBLE.0 | ES_AUTOHSCROLL as u32,
-        );
-
-        let edit = unsafe {
-            CreateWindowExW(
-                WINDOW_EX_STYLE(0),
-                PCWSTR::from_raw(class.as_ptr()),
-                PCWSTR::from_raw(empty.as_ptr()),
-                style,
-                0,
-                0,
-                10,
-                10,
-                self.hwnd,
-                HMENU(EDIT_ID as *mut core::ffi::c_void),
-                instance,
-                None,
-            )
-        };
-
-        if let Ok(edit) = edit {
-            self.edit = edit;
-            self.update_edit_font();
-
-            // Disable visual styles so WM_CTLCOLOREDIT actually paints the field
-            // instead of the theme's white background.
-            let empty_app = native_wide("");
-            let empty_id = native_wide("");
-            unsafe {
-                let _ = SetWindowTheme(
-                    edit,
-                    PCWSTR::from_raw(empty_app.as_ptr()),
-                    PCWSTR::from_raw(empty_id.as_ptr()),
-                );
-            }
-
-            // Native margins inside the rounded search field.
-            unsafe {
-                SendMessageW(
-                    edit,
-                    EM_SETMARGINS,
-                    WPARAM(3), // EC_LEFTMARGIN | EC_RIGHTMARGIN
-                    LPARAM(((6 << 16) | 2) as isize),
-                );
-            }
-
-            // Subclass to paint our own placeholder (keeps the native IME/caret).
-            unsafe {
-                let edit_proc: unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT =
-                    edit_wndproc;
-                let old = SetWindowLongPtrW(edit, GWLP_WNDPROC, edit_proc as usize as isize);
-                let _ = SetWindowLongPtrW(edit, GWLP_USERDATA, old);
-            }
-
-            self.edit_brush = unsafe { CreateSolidBrush(Self::edit_background()) };
-        }
-    }
-
-    fn edit_background() -> COLORREF {
-        // Matches the search field fill exactly so the native EDIT is invisible.
-        crate::render::over(crate::render::HUD, crate::render::WHITE, 0x20).colorref()
-    }
-
-    fn update_edit_font(&mut self) {
-        if self.edit.is_invalid() {
-            return;
-        }
-        self.edit_font = self.fonts.get(12.0, false).hfont;
-        unsafe {
-            SendMessageW(
-                self.edit,
-                WM_SETFONT,
-                WPARAM(self.edit_font.0 as usize),
-                LPARAM(1),
-            );
-        }
-    }
-
-    fn move_edit(&mut self, rect: RECT) {
-        if self.edit.is_invalid() {
-            return;
-        }
-        if rect.left == self.edit_rect.left
-            && rect.top == self.edit_rect.top
-            && rect.right == self.edit_rect.right
-            && rect.bottom == self.edit_rect.bottom
-        {
-            return;
-        }
-        self.edit_rect = rect;
-        unsafe {
-            let _ = SetWindowPos(
-                self.edit,
-                None,
-                rect.left,
-                rect.top,
-                rect.right - rect.left,
-                rect.bottom - rect.top,
-                SWP_NOZORDER | SWP_NOACTIVATE,
-            );
-            let _ = InvalidateRect(self.hwnd, None, false);
-        }
-    }
-
-    fn edit_text(&self) -> String {
-        if self.edit.is_invalid() {
-            return String::new();
-        }
-        unsafe {
-            let length = GetWindowTextLengthW(self.edit);
-            let mut buffer = vec![0u16; (length + 1) as usize];
-            let copied = GetWindowTextW(self.edit, &mut buffer);
-            String::from_utf16_lossy(&buffer[..copied.max(0) as usize])
-        }
-    }
-
-    fn update_search(&mut self) {
-        let text = self.edit_text();
+    fn apply_search(&mut self) {
+        let text = self.search.text.clone();
         if text == self.vm.search_text {
             return;
         }
@@ -532,6 +406,72 @@ impl RamViewApp {
         self.vm.apply_search_filter_highlighting();
         self.treemap.sync(&self.vm.treemap_items, self.now());
         self.invalidate();
+    }
+
+    fn copy_search(&self) {
+        let text = self
+            .search
+            .selected_text()
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| self.search.text.clone());
+        if !text.is_empty() {
+            ramview_platform::clipboard::set_text(self.hwnd, &text);
+        }
+    }
+
+    fn position_ime(&self) {
+        if self.hwnd.is_invalid() {
+            return;
+        }
+        let Some(box_rect) = self.search.box_rect else {
+            return;
+        };
+
+        unsafe {
+            let mut point = POINT {
+                x: self.search.caret_x,
+                y: (box_rect.top + box_rect.bottom) / 2,
+            };
+            let _ = ClientToScreen(self.hwnd, &mut point);
+
+            let context = ImmGetContext(self.hwnd);
+            if !context.is_invalid() {
+                let form = COMPOSITIONFORM {
+                    dwStyle: CFS_POINT,
+                    ptCurrentPos: point,
+                    rcArea: RECT::default(),
+                };
+                let _ = ImmSetCompositionWindow(context, &form);
+                let _ = ImmReleaseContext(self.hwnd, context);
+            }
+        }
+    }
+
+    fn ime_string(&self, index: IME_COMPOSITION_STRING) -> String {
+        unsafe {
+            let context = ImmGetContext(self.hwnd);
+            if context.is_invalid() {
+                return String::new();
+            }
+
+            let bytes = ImmGetCompositionStringW(context, index, None, 0);
+            let mut text = String::new();
+            if bytes > 0 {
+                let mut buffer = vec![0u16; bytes as usize / 2];
+                let copied = ImmGetCompositionStringW(
+                    context,
+                    index,
+                    Some(buffer.as_mut_ptr() as *mut core::ffi::c_void),
+                    bytes as u32,
+                );
+                if copied > 0 {
+                    text = String::from_utf16_lossy(&buffer[..copied as usize / 2]);
+                }
+            }
+
+            let _ = ImmReleaseContext(self.hwnd, context);
+            text
+        }
     }
 
     // ---------------------------------------------------------------- drawing
@@ -564,22 +504,9 @@ impl RamViewApp {
                 }
 
                 if let Some(surface) = self.surface.take() {
-                    let edit_rect = main_window::paint(self, &surface);
+                    main_window::paint(self, &surface);
                     surface.blit_to(hdc);
                     self.surface = Some(surface);
-                    match edit_rect {
-                        Some(rect) => {
-                            self.move_edit(rect);
-                            if !self.edit.is_invalid() {
-                                let _ = ShowWindow(self.edit, SW_SHOW);
-                            }
-                        }
-                        None => {
-                            if !self.edit.is_invalid() {
-                                let _ = ShowWindow(self.edit, SW_HIDE);
-                            }
-                        }
-                    }
                 }
             }
 
@@ -756,6 +683,7 @@ impl RamViewApp {
         self.window_hidden = true;
         self.hover = None;
         self.tooltip_visible = false;
+        self.search.focused = false;
         self.close_settings();
         if balloon {
             if let Some(shell) = &self.shell {
@@ -832,6 +760,8 @@ impl RamViewApp {
     // ---------------------------------------------------------------- settings window
 
     fn open_settings(&mut self) {
+        self.search.focused = false;
+        self.invalidate();
         self.settings_form = SettingsForm::from_settings(
             self.settings.current_settings(),
             StartupManager::is_startup_enabled(),
@@ -1233,6 +1163,26 @@ impl RamViewApp {
             WM_LBUTTONDOWN => {
                 let x = loword(lparam.0) as i16 as i32;
                 let y = hiword(lparam.0) as i16 as i32;
+
+                if let Some(box_rect) = self.search.box_rect {
+                    if contains(&box_rect, x, y) {
+                        self.search.focused = true;
+                        self.search.pending_caret_x = Some(x);
+                        self.search.anchor = None;
+                        self.invalidate();
+                        unsafe {
+                            let _ = SetFocus(hwnd);
+                        }
+                        return Some(LRESULT(0));
+                    }
+                }
+
+                if self.search.focused {
+                    self.search.focused = false;
+                    self.search.pending_caret_x = None;
+                    self.invalidate();
+                }
+
                 self.pressed = hit_test(&self.hits, x, y);
                 if self.pressed.is_some() {
                     let _ = SetCapture(hwnd);
@@ -1293,6 +1243,13 @@ impl RamViewApp {
                                 }
                             }
                         }
+                        if self.search.focused {
+                            let phase = ((self.now() / 0.53) as i64) & 1 == 0;
+                            if phase != self.caret_phase {
+                                self.caret_phase = phase;
+                                repaint = true;
+                            }
+                        }
                         if repaint {
                             let _ = InvalidateRect(hwnd, None, false);
                         }
@@ -1306,40 +1263,105 @@ impl RamViewApp {
                 let _ = InvalidateRect(hwnd, None, false);
                 Some(LRESULT(0))
             }
-            WM_COMMAND => {
-                let id = loword(wparam.0 as isize);
-                let code = hiword(wparam.0 as isize);
-                if id == EDIT_ID as u16 {
-                    match code {
-                        0x0100 => {
-                            self.edit_focus = true;
-                            let _ =
-                                windows::Win32::Graphics::Gdi::InvalidateRect(hwnd, None, false);
-                            let _ = InvalidateRect(self.edit, None, true);
+            WM_CHAR => {
+                if self.search.focused {
+                    if let Some(character) = char::from_u32(wparam.0 as u32) {
+                        if !character.is_control() {
+                            self.search.insert(&character.to_string());
+                            self.apply_search();
+                            self.invalidate();
                         }
-                        0x0200 => {
-                            self.edit_focus = false;
-                            let _ =
-                                windows::Win32::Graphics::Gdi::InvalidateRect(hwnd, None, false);
-                            let _ = InvalidateRect(self.edit, None, true);
+                    }
+                    return Some(LRESULT(0));
+                }
+                None
+            }
+            WM_KEYDOWN => {
+                if self.search.focused {
+                    let key = wparam.0 as u32;
+                    let shift = (unsafe { GetKeyState(VK_SHIFT) } as u16 & 0x8000) != 0;
+                    let control = (unsafe { GetKeyState(VK_CONTROL) } as u16 & 0x8000) != 0;
+                    let mut changed = false;
+
+                    match key {
+                        VK_BACK => changed = self.search.backspace(),
+                        VK_DELETE => changed = self.search.delete_forward(),
+                        VK_LEFT => self.search.move_caret(false, shift),
+                        VK_RIGHT => self.search.move_caret(true, shift),
+                        VK_HOME => self.search.home(shift),
+                        VK_END => self.search.end(shift),
+                        KEY_A if control => self.search.select_all(),
+                        KEY_C if control => self.copy_search(),
+                        KEY_X if control => {
+                            self.copy_search();
+                            changed = self.search.delete_selection();
                         }
-                        0x0300 => {
-                            self.update_search();
-                            let _ = InvalidateRect(self.edit, None, true);
+                        KEY_V if control => {
+                            if let Some(text) =
+                                ramview_platform::clipboard::get_text(self.hwnd)
+                            {
+                                self.search.insert(&text);
+                                changed = true;
+                            }
+                        }
+                        VK_ESCAPE => {
+                            self.search.focused = false;
+                            self.search.text.clear();
+                            self.search.caret = 0;
+                            self.search.anchor = None;
+                            self.search.composition.clear();
+                            self.search.composing = false;
+                            changed = true;
+                        }
+                        VK_RETURN => {
+                            self.search.focused = false;
                         }
                         _ => {}
                     }
+
+                    if changed {
+                        self.apply_search();
+                    }
+                    self.invalidate();
+                    return Some(LRESULT(0));
                 }
-                Some(LRESULT(0))
+                None
             }
-            WM_CTLCOLOREDIT => {
-                // wParam is the EDIT's HDC; lParam is the control handle.
-                let hdc = HDC(wparam.0 as *mut core::ffi::c_void);
-                unsafe {
-                    SetTextColor(hdc, COLORREF(0x00FF_FFFF));
-                    SetBkColor(hdc, Self::edit_background());
+            WM_IME_STARTCOMPOSITION => {
+                if self.search.focused {
+                    self.search.composing = true;
+                    self.position_ime();
+                    self.invalidate();
+                    return Some(LRESULT(0));
                 }
-                Some(LRESULT(self.edit_brush.0 as isize))
+                None
+            }
+            WM_IME_COMPOSITION => {
+                if self.search.focused {
+                    let flags = lparam.0 as u32;
+                    if flags & GCS_RESULTSTR.0 != 0 {
+                        let result = self.ime_string(GCS_RESULTSTR);
+                        if !result.is_empty() {
+                            self.search.insert(&result);
+                        }
+                        self.search.composition.clear();
+                        self.search.composing = false;
+                        self.apply_search();
+                    } else if flags & GCS_COMPSTR.0 != 0 {
+                        self.search.composition = self.ime_string(GCS_COMPSTR);
+                        self.search.composing = true;
+                        self.position_ime();
+                    }
+                    self.invalidate();
+                    return Some(LRESULT(0));
+                }
+                None
+            }
+            WM_IME_ENDCOMPOSITION => {
+                self.search.composing = false;
+                self.search.composition.clear();
+                self.invalidate();
+                Some(LRESULT(0))
             }
             WM_GETMINMAXINFO => {
                 let info = &mut *(lparam.0 as *mut MINMAXINFO);
@@ -1522,57 +1544,6 @@ fn try_round_window(hwnd: HWND) -> bool {
 
         rounded
     }
-}
-
-unsafe extern "system" fn edit_wndproc(
-    hwnd: HWND,
-    message: u32,
-    wparam: WPARAM,
-    lparam: LPARAM,
-) -> LRESULT {
-    let old_raw = GetWindowLongPtrW(hwnd, GWLP_USERDATA);
-    let old_proc: Option<unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT> =
-        std::mem::transmute(old_raw);
-
-    let result = match old_proc {
-        Some(proc) => CallWindowProcW(Some(proc), hwnd, message, wparam, lparam),
-        None => DefWindowProcW(hwnd, message, wparam, lparam),
-    };
-
-    // Draw the placeholder ourselves so it matches the HUD typography.
-    if message == WM_PAINT && GetWindowTextLengthW(hwnd) == 0 && GetFocus() != hwnd {
-        let hdc = GetDC(hwnd);
-        if !hdc.is_invalid() {
-            let mut rect = RECT::default();
-            let _ = GetClientRect(hwnd, &mut rect);
-            rect.left += 2;
-            rect.right -= 4;
-
-            let font_handle = SendMessageW(hwnd, WM_GETFONT, WPARAM(0), LPARAM(0)).0;
-            if font_handle != 0 {
-                SelectObject(hdc, HGDIOBJ(font_handle as *mut core::ffi::c_void));
-            }
-
-            SetBkMode(hdc, TRANSPARENT);
-            SetTextColor(hdc, COLORREF(0x00A0_8A7C));
-            let mut text = native_wide("Filter processes...");
-            DrawTextW(
-                hdc,
-                &mut text,
-                &mut rect,
-                DRAW_TEXT_FORMAT(
-                    DT_SINGLELINE.0 | DT_VCENTER.0 | DT_LEFT.0 | DT_NOPREFIX.0,
-                ),
-            );
-            let _ = ReleaseDC(hwnd, hdc);
-        }
-    }
-
-    if message == WM_SETFOCUS || message == WM_KILLFOCUS {
-        let _ = InvalidateRect(hwnd, None, true);
-    }
-
-    result
 }
 
 fn loword(value: isize) -> u16 {

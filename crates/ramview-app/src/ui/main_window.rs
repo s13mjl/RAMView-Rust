@@ -14,6 +14,7 @@ use crate::render::{
 };
 use crate::treemap::{key_for, AnimatedTreemap};
 use crate::viewmodel::MainViewModel;
+use crate::search::SearchField;
 
 pub struct PaintCtx<'a> {
     pub surface: &'a Surface,
@@ -28,14 +29,15 @@ pub struct PaintCtx<'a> {
     pub strip_scroll: i32,
     pub tooltip: Option<HitId>,
     pub cursor: POINT,
-    pub edit_focus: bool,
+    pub search: &'a mut SearchField,
+    pub caret_on: bool,
 }
 
 pub fn scale_px(scale: f32, dip: f32) -> i32 {
     (dip * scale).round() as i32
 }
 
-pub fn paint(app: &mut RamViewApp, surface: &Surface) -> Option<RECT> {
+pub fn paint(app: &mut RamViewApp, surface: &Surface) {
     let tooltip = if app.tooltip_visible {
         app.hover.clone()
     } else {
@@ -56,15 +58,15 @@ pub fn paint(app: &mut RamViewApp, surface: &Surface) -> Option<RECT> {
         strip_scroll: app.strip_scroll,
         tooltip,
         cursor: app.cursor,
-        edit_focus: app.edit_focus,
+        search: &mut app.search,
+        caret_on: app.caret_phase,
     };
 
-    let edit_rect = paint_impl(&mut ctx);
+    paint_impl(&mut ctx);
     app.hits = hits;
-    edit_rect
 }
 
-fn paint_impl(ctx: &mut PaintCtx) -> Option<RECT> {
+fn paint_impl(ctx: &mut PaintCtx) {
     ctx.surface.begin_frame();
     ctx.surface.clear(HUD);
 
@@ -77,7 +79,7 @@ fn paint_impl(ctx: &mut PaintCtx) -> Option<RECT> {
         ctx.vm.click_through,
     );
 
-    let edit_rect = paint_header(ctx, &layout);
+    paint_header(ctx, &layout);
     if let Some(banner) = layout.banner {
         paint_banner(ctx, banner);
     }
@@ -92,11 +94,9 @@ fn paint_impl(ctx: &mut PaintCtx) -> Option<RECT> {
         bottom: ctx.surface.height,
     };
     paint_tooltip(ctx, bounds);
-
-    edit_rect
 }
 
-fn paint_header(ctx: &mut PaintCtx, layout: &layout::Layout) -> Option<RECT> {
+fn paint_header(ctx: &mut PaintCtx, layout: &layout::Layout) {
     let PaintCtx {
         surface,
         scale,
@@ -105,10 +105,12 @@ fn paint_header(ctx: &mut PaintCtx, layout: &layout::Layout) -> Option<RECT> {
         hover,
         pressed,
         vm,
-        edit_focus,
+        search,
+        caret_on,
         ..
     } = ctx;
     let scale = *scale;
+    let caret_on = *caret_on;
 
     let rect = layout.header;
     let center_y = (rect.top + rect.bottom) / 2;
@@ -294,10 +296,9 @@ fn paint_header(ctx: &mut PaintCtx, layout: &layout::Layout) -> Option<RECT> {
         });
     }
 
-    // Live search box (§13): painted here, the native EDIT sits inside it.
+    // Live search box (§13): fully custom-drawn field with caret and IME support.
     let search_right = buttons_left - s(14.0);
     let search_left = (search_right - s(220.0)).max(x + s(14.0));
-    let mut edit_rect = None;
 
     if search_right - search_left > s(40.0) {
         let box_rect = RECT {
@@ -308,13 +309,13 @@ fn paint_header(ctx: &mut PaintCtx, layout: &layout::Layout) -> Option<RECT> {
         };
         let radius = s(8.0);
         let background = over(HUD, WHITE, 0x20);
-        let border = if *edit_focus {
+        let border = if search.focused {
             ACCENT
         } else {
             over(HUD, WHITE, 0x40)
         };
 
-        if *edit_focus {
+        if search.focused {
             let ring = RECT {
                 left: box_rect.left - s(2.0),
                 top: box_rect.top - s(2.0),
@@ -342,7 +343,7 @@ fn paint_header(ctx: &mut PaintCtx, layout: &layout::Layout) -> Option<RECT> {
             over(HUD, WHITE, 0x2E),
         );
 
-        let icon_color = if *edit_focus {
+        let icon_color = if search.focused {
             ACCENT_LIGHT
         } else {
             Rgb::new(0x7C, 0x8A, 0xA0)
@@ -355,15 +356,16 @@ fn paint_header(ctx: &mut PaintCtx, layout: &layout::Layout) -> Option<RECT> {
             icon_color,
         );
 
-        edit_rect = Some(RECT {
-            left: box_rect.left + s(27.0),
-            top: box_rect.top + s(2.0),
-            right: box_rect.right - s(8.0),
-            bottom: box_rect.bottom - s(2.0),
-        });
+        paint_search_field(
+            surface,
+            fonts,
+            search,
+            caret_on,
+            scale,
+            box_rect,
+            center_y,
+        );
     }
-
-    edit_rect
 }
 
 fn paint_glass_button(surface: &Surface, scale: f32, rect: RECT, hovered: bool, pressed: bool) {
@@ -499,6 +501,148 @@ fn paint_search_icon(surface: &Surface, scale: f32, left: i32, center_y: i32, co
         color,
         stroke,
     );
+}
+
+fn paint_search_field(
+    surface: &Surface,
+    fonts: &mut FontCache,
+    search: &mut SearchField,
+    caret_on: bool,
+    scale: f32,
+    box_rect: RECT,
+    center_y: i32,
+) {
+    let s = |dip: f32| scale_px(scale, dip);
+    let font = fonts.get(12.0, false);
+
+    let text_left = box_rect.left + s(27.0);
+    let text_right = box_rect.right - s(8.0);
+    let text_area = RECT {
+        left: text_left,
+        top: box_rect.top,
+        right: text_right,
+        bottom: box_rect.bottom,
+    };
+    let area_width = (text_right - text_left).max(1);
+
+    // Resolve a pending mouse click into the nearest caret position.
+    if let Some(click_x) = search.pending_caret_x.take() {
+        let target = click_x - text_left + search.scroll;
+        let mut best = 0usize;
+        let mut best_distance = i32::MAX;
+        for (index, _) in search.text.char_indices() {
+            let width = surface.text_width(&search.text[..index], font);
+            let distance = (width - target).abs();
+            if distance < best_distance {
+                best_distance = distance;
+                best = index;
+            }
+        }
+        if (surface.text_width(&search.text, font) - target).abs() < best_distance {
+            best = search.text.len();
+        }
+        search.caret = best;
+    }
+
+    let text_width = surface.text_width(&search.text, font);
+    let composition_width = surface.text_width(&search.composition, font);
+    let caret_offset =
+        surface.text_width(&search.text[..search.caret], font) + composition_width;
+
+    let max_scroll = (text_width + composition_width - area_width).max(0);
+    if caret_offset - search.scroll > area_width {
+        search.scroll = caret_offset - area_width;
+    }
+    if caret_offset - search.scroll < 0 {
+        search.scroll = caret_offset;
+    }
+    search.scroll = search.scroll.clamp(0, max_scroll);
+
+    search.box_rect = Some(box_rect);
+    search.caret_x = text_left - search.scroll + caret_offset;
+
+    let saved = surface.save();
+    surface.clip(text_area);
+
+    if search.text.is_empty() && search.composition.is_empty() && !search.focused {
+        surface.text(
+            "Filter processes...",
+            text_area,
+            font,
+            Rgb::new(0x7C, 0x8A, 0xA0),
+            TextOpts::left(false),
+        );
+    } else {
+        if let Some((start, end)) = search.selection() {
+            let start_x = text_left - search.scroll + surface.text_width(&search.text[..start], font);
+            let end_x = text_left - search.scroll + surface.text_width(&search.text[..end], font);
+            surface.fill(
+                RECT {
+                    left: start_x,
+                    top: box_rect.top + s(5.0),
+                    right: (end_x).max(start_x + 1),
+                    bottom: box_rect.bottom - s(5.0),
+                },
+                over(HUD, ACCENT, 0x70),
+            );
+        }
+
+        surface.text(
+            &search.text,
+            RECT {
+                left: text_left - search.scroll,
+                top: box_rect.top,
+                right: text_right + text_width,
+                bottom: box_rect.bottom,
+            },
+            font,
+            WHITE,
+            TextOpts::left(false),
+        );
+
+        if !search.composition.is_empty() {
+            let composition_left = text_left - search.scroll + text_width;
+            surface.text(
+                &search.composition,
+                RECT {
+                    left: composition_left,
+                    top: box_rect.top,
+                    right: text_right + text_width + composition_width,
+                    bottom: box_rect.bottom,
+                },
+                font,
+                ACCENT_CYAN,
+                TextOpts::left(false),
+            );
+
+            let underline_y = box_rect.bottom - s(7.0);
+            surface.fill(
+                RECT {
+                    left: composition_left,
+                    top: underline_y,
+                    right: composition_left + composition_width,
+                    bottom: underline_y + s(1.0).max(1),
+                },
+                ACCENT_CYAN,
+            );
+        }
+    }
+
+    if search.focused && caret_on {
+        let caret_height = s(15.0);
+        let top = center_y - caret_height / 2;
+        surface.fill(
+            RECT {
+                left: search.caret_x,
+                top,
+                right: search.caret_x + s(1.0).max(1),
+                bottom: top + caret_height,
+            },
+            WHITE,
+        );
+    }
+
+    surface.restore(saved);
 }
 
 fn paint_glyph(

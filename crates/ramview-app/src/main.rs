@@ -4,6 +4,7 @@ mod app;
 mod hit;
 mod layout;
 mod render;
+mod search;
 mod treemap;
 mod ui;
 mod viewmodel;

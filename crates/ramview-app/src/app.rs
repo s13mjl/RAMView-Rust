@@ -16,7 +16,10 @@ use windows::core::PCWSTR;
 use windows::Win32::Foundation::{
     COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
 };
-use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_USE_IMMERSIVE_DARK_MODE};
+use windows::Win32::Graphics::Dwm::{
+    DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_USE_IMMERSIVE_DARK_MODE,
+    DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
+};
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, CreateRoundRectRgn, CreateSolidBrush, DrawTextW, EndPaint, GetDC, InvalidateRect,
     ReleaseDC, SelectObject, SetBkColor, SetBkMode, SetTextColor, SetWindowRgn, UpdateWindow,
@@ -101,6 +104,7 @@ pub struct RamViewApp {
     started: Instant,
     window_hidden: bool,
     exiting: bool,
+    dwm_rounded: bool,
 }
 
 impl RamViewApp {
@@ -151,6 +155,7 @@ impl RamViewApp {
             started: Instant::now(),
             window_hidden: false,
             exiting: false,
+            dwm_rounded: false,
         }
     }
 
@@ -212,7 +217,7 @@ impl RamViewApp {
     }
 
     unsafe fn create_main_window(
-        &self,
+        &mut self,
         instance: windows::Win32::Foundation::HINSTANCE,
     ) -> windows::core::Result<HWND> {
         let class = native_wide(MAIN_CLASS);
@@ -261,6 +266,7 @@ impl RamViewApp {
         );
 
         self.update_layered_alpha(hwnd);
+        self.dwm_rounded = try_round_window(hwnd);
         if self.vm.always_on_top {
             let _ = SetWindowPos(
                 hwnd,
@@ -888,19 +894,20 @@ impl RamViewApp {
             None,
         )
         .ok()?;
-        let _ = SetWindowRgn(
-            hwnd,
-            CreateRoundRectRgn(
-                0,
-                0,
-                width + 1,
-                height + 1,
-                (24.0 * self.scale) as i32,
-                (24.0 * self.scale) as i32,
-            ),
-            true,
-        );
-
+        if !try_round_window(hwnd) {
+            let _ = SetWindowRgn(
+                hwnd,
+                CreateRoundRectRgn(
+                    0,
+                    0,
+                    width + 1,
+                    height + 1,
+                    (24.0 * self.scale) as i32,
+                    (24.0 * self.scale) as i32,
+                ),
+                true,
+            );
+        }
         let dark: i32 = 1;
         let _ = DwmSetWindowAttribute(
             hwnd,
@@ -1177,18 +1184,20 @@ impl RamViewApp {
             WM_SIZE => {
                 let width = loword(lparam.0) as i32;
                 let height = hiword(lparam.0) as i32;
-                let _ = SetWindowRgn(
-                    hwnd,
-                    CreateRoundRectRgn(
-                        0,
-                        0,
-                        width + 1,
-                        height + 1,
-                        (28.0 * self.scale) as i32,
-                        (28.0 * self.scale) as i32,
-                    ),
-                    true,
-                );
+                if !self.dwm_rounded {
+                    let _ = SetWindowRgn(
+                        hwnd,
+                        CreateRoundRectRgn(
+                            0,
+                            0,
+                            width + 1,
+                            height + 1,
+                            (28.0 * self.scale) as i32,
+                            (28.0 * self.scale) as i32,
+                        ),
+                        true,
+                    );
+                }
                 self.recalc_layout();
                 Some(LRESULT(0))
             }
@@ -1495,6 +1504,33 @@ fn has_tooltip(id: &HitId) -> bool {
 fn app_icon(instance: windows::Win32::Foundation::HINSTANCE) -> HICON {
     // Icon resource id 1 is emitted by ramview.rc.
     unsafe { LoadIconW(instance, PCWSTR::from_raw(1 as *const u16)).unwrap_or_default() }
+}
+
+/// Windows 11 lets DWM round the window with anti-aliased corners. Falls back to
+/// a window region on older builds.
+fn try_round_window(hwnd: HWND) -> bool {
+    unsafe {
+        let preference = DWMWCP_ROUND;
+        let rounded = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_WINDOW_CORNER_PREFERENCE,
+            &preference as *const _ as *const core::ffi::c_void,
+            std::mem::size_of::<i32>() as u32,
+        )
+        .is_ok();
+
+        if rounded {
+            let border = crate::render::Rgb::new(0x2E, 0x36, 0x42).colorref();
+            let _ = DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_BORDER_COLOR,
+                &border as *const _ as *const core::ffi::c_void,
+                std::mem::size_of::<u32>() as u32,
+            );
+        }
+
+        rounded
+    }
 }
 
 unsafe extern "system" fn edit_wndproc(

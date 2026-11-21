@@ -230,11 +230,18 @@ impl RamViewApp {
         RegisterClassW(&window_class);
 
         let title = native_wide("RAM VIEW");
+        let style = WS_POPUP
+            | WS_THICKFRAME
+            | WS_CAPTION
+            | WS_SYSMENU
+            | WS_MINIMIZEBOX
+            | WS_MAXIMIZEBOX
+            | WS_CLIPCHILDREN;
         let hwnd = CreateWindowExW(
             WS_EX_LAYERED,
             class_name,
             PCWSTR::from_raw(title.as_ptr()),
-            WS_POPUP | WS_CLIPCHILDREN,
+            style,
             100,
             100,
             720,
@@ -1132,6 +1139,41 @@ impl RamViewApp {
                 Some(LRESULT(0))
             }
             WM_ERASEBKGND => Some(LRESULT(1)),
+            // WS_THICKFRAME gives native resize borders; drop the non-client frame
+            // so the HUD still paints edge to edge.
+            WM_NCCALCSIZE => {
+                if wparam.0 != 0 {
+                    Some(LRESULT(0))
+                } else {
+                    None
+                }
+            }
+            WM_NCPAINT => Some(LRESULT(0)),
+            WM_NCHITTEST => {
+                let x = (lparam.0 as u32 & 0xFFFF) as i16 as i32;
+                let y = ((lparam.0 as u32 >> 16) & 0xFFFF) as i16 as i32;
+                let mut window = RECT::default();
+                let _ = GetWindowRect(hwnd, &mut window);
+                let edge = (6.0 * self.scale).round().max(4.0) as i32;
+
+                let on_left = x - window.left < edge;
+                let on_right = window.right - x < edge;
+                let on_top = y - window.top < edge;
+                let on_bottom = window.bottom - y < edge;
+
+                let hit = match (on_left, on_right, on_top, on_bottom) {
+                    (true, _, true, _) => HTTOPLEFT,
+                    (_, true, true, _) => HTTOPRIGHT,
+                    (true, _, _, true) => HTBOTTOMLEFT,
+                    (_, true, _, true) => HTBOTTOMRIGHT,
+                    (true, _, _, _) => HTLEFT,
+                    (_, true, _, _) => HTRIGHT,
+                    (_, _, true, _) => HTTOP,
+                    (_, _, _, true) => HTBOTTOM,
+                    _ => HTCLIENT,
+                };
+                Some(LRESULT(hit as isize))
+            }
             WM_SIZE => {
                 let width = loword(lparam.0) as i32;
                 let height = hiword(lparam.0) as i32;

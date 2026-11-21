@@ -306,21 +306,60 @@ fn paint_header(ctx: &mut PaintCtx, layout: &layout::Layout) -> Option<RECT> {
             right: search_right,
             bottom: center_y + s(14.0),
         };
-        let background = over(HUD, WHITE, if *edit_focus { 0x28 } else { 0x20 });
+        let radius = s(8.0);
+        let background = over(HUD, WHITE, 0x20);
         let border = if *edit_focus {
             ACCENT
         } else {
-            over(HUD, WHITE, 0x38)
+            over(HUD, WHITE, 0x40)
         };
-        surface.round_rect(box_rect, s(6.0), Some(background), Some(border));
 
-        paint_search_icon(surface, scale, box_rect.left + s(10.0), center_y);
+        if *edit_focus {
+            let ring = RECT {
+                left: box_rect.left - s(2.0),
+                top: box_rect.top - s(2.0),
+                right: box_rect.right + s(2.0),
+                bottom: box_rect.bottom + s(2.0),
+            };
+            surface.round_rect_outline(
+                ring,
+                radius + s(2.0),
+                over(HUD, ACCENT, 0x60),
+                (1.5 * scale).max(1.0),
+            );
+        }
+
+        surface.round_rect(box_rect, radius, Some(background), Some(border));
+
+        // 1px glass sheen along the top edge.
+        surface.fill(
+            RECT {
+                left: box_rect.left + s(10.0),
+                top: box_rect.top + s(1.0),
+                right: box_rect.right - s(10.0),
+                bottom: box_rect.top + s(2.0),
+            },
+            over(HUD, WHITE, 0x2E),
+        );
+
+        let icon_color = if *edit_focus {
+            ACCENT_LIGHT
+        } else {
+            Rgb::new(0x7C, 0x8A, 0xA0)
+        };
+        paint_search_icon(
+            surface,
+            scale,
+            box_rect.left + s(10.0),
+            center_y,
+            icon_color,
+        );
 
         edit_rect = Some(RECT {
-            left: box_rect.left + s(28.0),
-            top: box_rect.top + s(1.0),
+            left: box_rect.left + s(27.0),
+            top: box_rect.top + s(2.0),
             right: box_rect.right - s(8.0),
-            bottom: box_rect.bottom - s(1.0),
+            bottom: box_rect.bottom - s(2.0),
         });
     }
 
@@ -437,8 +476,10 @@ fn paint_close_icon(surface: &Surface, scale: f32, rect: RECT) {
     );
 }
 
-fn paint_search_icon(surface: &Surface, scale: f32, left: i32, center_y: i32) {
-    let radius = scale_px(scale, 4.0);
+fn paint_search_icon(surface: &Surface, scale: f32, left: i32, center_y: i32, color: Rgb) {
+    let radius = scale_px(scale, 4.5);
+    let stroke = (1.4 * scale).max(1.0);
+
     surface.ellipse_outline(
         RECT {
             left,
@@ -446,16 +487,17 @@ fn paint_search_icon(surface: &Surface, scale: f32, left: i32, center_y: i32) {
             right: left + radius * 2,
             bottom: center_y + radius,
         },
-        Rgb::new(0x64, 0x74, 0x8B),
-        scale_px(scale, 1.0).max(1),
+        color,
+        stroke.round().max(1.0) as i32,
     );
-    surface.line(
-        left + radius * 2 - scale_px(scale, 1.0),
-        center_y + radius - scale_px(scale, 1.0),
-        left + radius * 2 + scale_px(scale, 2.0),
-        center_y + radius + scale_px(scale, 2.0),
-        Rgb::new(0x64, 0x74, 0x8B),
-        scale_px(scale, 1.0).max(1),
+
+    surface.line_f32(
+        (left + radius * 2 - 1) as f32,
+        (center_y + radius - 1) as f32,
+        (left + radius * 2 + 3) as f32,
+        (center_y + radius + 3) as f32,
+        color,
+        stroke,
     );
 }
 

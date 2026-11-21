@@ -443,27 +443,13 @@ impl RamViewApp {
                 let _ = SetWindowLongPtrW(edit, GWLP_USERDATA, old);
             }
 
-            self.edit_brush = unsafe { CreateSolidBrush(Self::edit_background(false)) };
+            self.edit_brush = unsafe { CreateSolidBrush(Self::edit_background()) };
         }
     }
 
-    fn edit_background(focused: bool) -> COLORREF {
-        // over(#090D14, white, 0x20 / 0x28), precomposited for the opaque EDIT brush.
-        if focused {
-            crate::render::over(
-                crate::render::HUD,
-                crate::render::WHITE,
-                0x28,
-            )
-            .colorref()
-        } else {
-            crate::render::over(
-                crate::render::HUD,
-                crate::render::WHITE,
-                0x20,
-            )
-            .colorref()
-        }
+    fn edit_background() -> COLORREF {
+        // Matches the search field fill exactly so the native EDIT is invisible.
+        crate::render::over(crate::render::HUD, crate::render::WHITE, 0x20).colorref()
     }
 
     fn update_edit_font(&mut self) {
@@ -1313,22 +1299,12 @@ impl RamViewApp {
                     match code {
                         0x0100 => {
                             self.edit_focus = true;
-                            let _ = windows::Win32::Graphics::Gdi::DeleteObject(
-                                windows::Win32::Graphics::Gdi::HGDIOBJ(self.edit_brush.0),
-                            );
-                            self.edit_brush =
-                                CreateSolidBrush(Self::edit_background(true));
                             let _ =
                                 windows::Win32::Graphics::Gdi::InvalidateRect(hwnd, None, false);
                             let _ = InvalidateRect(self.edit, None, true);
                         }
                         0x0200 => {
                             self.edit_focus = false;
-                            let _ = windows::Win32::Graphics::Gdi::DeleteObject(
-                                windows::Win32::Graphics::Gdi::HGDIOBJ(self.edit_brush.0),
-                            );
-                            self.edit_brush =
-                                CreateSolidBrush(Self::edit_background(false));
                             let _ =
                                 windows::Win32::Graphics::Gdi::InvalidateRect(hwnd, None, false);
                             let _ = InvalidateRect(self.edit, None, true);
@@ -1346,7 +1322,7 @@ impl RamViewApp {
                 let hdc = HDC(lparam.0 as *mut core::ffi::c_void);
                 unsafe {
                     SetTextColor(hdc, COLORREF(0x00FF_FFFF));
-                    SetBkColor(hdc, Self::edit_background(self.edit_focus));
+                    SetBkColor(hdc, Self::edit_background());
                 }
                 Some(LRESULT(self.edit_brush.0 as isize))
             }
@@ -1563,7 +1539,7 @@ unsafe extern "system" fn edit_wndproc(
             }
 
             SetBkMode(hdc, TRANSPARENT);
-            SetTextColor(hdc, COLORREF(0x008B_7464));
+            SetTextColor(hdc, COLORREF(0x00A0_8A7C));
             let mut text = native_wide("Filter processes...");
             DrawTextW(
                 hdc,

@@ -401,6 +401,34 @@ impl Surface {
         }
     }
 
+    pub fn round_rect_outline(&self, rect: RECT, radius: i32, color: Rgb, width: f32) {
+        let radius = radius.max(0) as f32;
+        let mut path: *mut GpPath = std::ptr::null_mut();
+        unsafe {
+            if GdipCreatePath(FillMode(1), &mut path).0 != 0 {
+                return;
+            }
+
+            let x = rect.left as f32;
+            let y = rect.top as f32;
+            let w = (rect.right - rect.left) as f32;
+            let h = (rect.bottom - rect.top) as f32;
+            let d = (radius * 2.0).min(w).min(h);
+
+            if d > 0.5 {
+                let _ = GdipAddPathArc(path, x, y, d, d, 180.0, 90.0);
+                let _ = GdipAddPathArc(path, x + w - d, y, d, d, 270.0, 90.0);
+                let _ = GdipAddPathArc(path, x + w - d, y + h - d, d, d, 0.0, 90.0);
+                let _ = GdipAddPathArc(path, x, y + h - d, d, d, 90.0, 90.0);
+            }
+            let _ = GdipClosePathFigure(path);
+
+            let pen = self.pen(color, (width.max(0.1) * 10.0) as u32, false);
+            let _ = GdipDrawPath(self.graphics, pen, path);
+            let _ = GdipDeletePath(path);
+        }
+    }
+
     pub fn ellipse(&self, rect: RECT, color: Rgb) {
         let brush = self.brush(color);
         unsafe {

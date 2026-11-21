@@ -8,7 +8,7 @@
 
 RAM VIEW 把实时的物理内存占用画成一块块半透明玻璃方块：每个进程（或同名进程组）一块，面积按 Working Set 物理内存分配，布局使用 **Squarified Treemap**（Bruls / Huizing / van Wijk）算法，避免出现细长条。
 
-本项目是原 C# / WPF 版本 **1:1 的 Rust 重写**：算法、排序、筛选、分组、防霸占、临界进程保护、托盘、全局热键、本地 HTTP API 与设置文件格式全部对齐；渲染层从 WPF/OpenGL 换成 **Win32 分层窗口 + GDI 软件绘制**，因此常驻内存大幅下降。
+本项目是原 C# / WPF 版本 **1:1 的 Rust 重写**：算法、排序、筛选、分组、防霸占、临界进程保护、托盘、全局热键、本地 HTTP API 与设置文件格式全部对齐；渲染层从 WPF/OpenGL 换成 **Win32 分层窗口 + GDI/GDI+ 抗锯齿软件绘制**，因此常驻内存大幅下降。
 
 ---
 
@@ -33,10 +33,10 @@ RAM VIEW 把实时的物理内存占用画成一块块半透明玻璃方块：�
 | 项目 | 做法 |
 | --- | --- |
 | 窗口 | `WS_EX_LAYERED` + `SetLayeredWindowAttributes`，圆角用窗口 Region 裁剪 |
-| 绘制 | GDI 软件绘制到 32bpp DIB，再 `BitBlt` 到屏幕 DC（双缓冲，无闪烁） |
+| 绘制 | GDI+ 抗锯齿绘制到 32bpp DIB，再 `BitBlt` 到屏幕 DC（双缓冲，无闪烁） |
 | 字体 | 直接使用系统 Segoe UI / Segoe MDL2 Assets，只缓存实际用到的字号 |
-| 图标 | PNG 解码为预乘 BGRA DIB，`AlphaBlend` 贴图（无 GPU 纹理） |
-| 搜索框 | 原生 `EDIT` 子控件（中文输入法正常），深色自绘外观 |
+| 图标 | PNG 解码为预乘 BGRA 位图，GDI+ 插值贴图（无 GPU 纹理） |
+| 搜索框 | 原生 `EDIT` 子控件（中文输入法正常），深色自绘外观与自绘占位符 |
 | 进程数据 | 不再在快照 / Treemap / 详情里重复克隆进程列表与图标字节 |
 
 `Cargo.toml` 的 release profile 使用 `opt-level = "z"`、LTO、`panic = "abort"`、`strip`，可执行文件约 **0.7 MB**。
@@ -52,7 +52,7 @@ RAMView-Rust/
 ├─ crates/
 │  ├─ ramview-core/        # 纯逻辑：模型、SquarifiedTreemap、权重/防霸占、分组筛选、指标、白名单、热键解析
 │  ├─ ramview-platform/    # Win32 服务：内存查询、进程枚举、图标提取、进程树终止、设置读写、自启、HTTP API、托盘/热键、剪贴板
-│  └─ ramview-app/         # 可执行程序：Win32 消息循环、主窗口/设置窗口、GDI 绘制、动画、交互
+│  └─ ramview-app/         # 可执行程序：Win32 消息循环、主窗口/设置窗口、GDI+ 绘制、动画、交互
 ├─ Cargo.toml              # workspace
 └─ README.md
 ```
@@ -63,7 +63,7 @@ RAMView-Rust/
 | --- | --- |
 | `RAMView.Core`（Models / Algorithms / Services / Interfaces） | `crates/ramview-core` |
 | `RAMView.Infrastructure`（Native / Services） | `crates/ramview-platform` |
-| `RAMView.App`（MainWindow / Controls / Views / Converters） | `crates/ramview-app`（GDI 重绘） |
+| `RAMView.App`（MainWindow / Controls / Views / Converters） | `crates/ramview-app`（GDI+ 重绘） |
 
 ---
 
@@ -213,8 +213,8 @@ curl.exe -X POST http://localhost:51888/api/kill `
 
 1. **紧凑模式窗口高度 120 DIP**（原版 80 会把底部控件挤出窗口、条带几乎没有可见高度），并隐藏底部栏与 Ghost 横幅。
 2. **启动时不从磁盘加载设置**：与原版行为保持一致（原版 `LoadSettingsAsync` 从未被调用），保存功能正常。如需启动即加载，改一行即可。
-3. **视觉细节**：圆角由窗口 Region 裁剪（无抗锯齿边缘）、没有窗口投影、Tooltip 在 HUD 内部绘制；图标使用系统 Segoe MDL2 Assets 单色字形替代彩色 Emoji；告警/确认使用原生 `MessageBoxW`。
-4. **搜索框**改为原生 `EDIT` 控件，中文输入法、选择、复制粘贴均为系统行为。
+3. **视觉细节**：圆角、圆形、线条与文字均为 GDI+ 抗锯齿；窗口外框圆角由 Region 裁剪；没有窗口投影；Tooltip 在 HUD 内部绘制；图标使用系统 Segoe MDL2 Assets 单色字形替代彩色 Emoji；告警/确认使用原生 `MessageBoxW`。
+4. **搜索框**改为原生 `EDIT` 控件（中文输入法、选择、复制粘贴均为系统行为），占位符由子类化自绘，与 HUD 字体和配色一致。
 
 除此之外的功能、算法与 API 行为均与原版对齐。
 

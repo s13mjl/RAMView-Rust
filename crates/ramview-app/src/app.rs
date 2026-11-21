@@ -430,6 +430,18 @@ impl RamViewApp {
             self.edit = edit;
             self.update_edit_font();
 
+            // Disable visual styles so WM_CTLCOLOREDIT actually paints the field
+            // instead of the theme's white background.
+            let empty_app = native_wide("");
+            let empty_id = native_wide("");
+            unsafe {
+                let _ = SetWindowTheme(
+                    edit,
+                    PCWSTR::from_raw(empty_app.as_ptr()),
+                    PCWSTR::from_raw(empty_id.as_ptr()),
+                );
+            }
+
             // Native margins inside the rounded search field.
             unsafe {
                 SendMessageW(
@@ -1327,7 +1339,8 @@ impl RamViewApp {
                 Some(LRESULT(0))
             }
             WM_CTLCOLOREDIT => {
-                let hdc = HDC(lparam.0 as *mut core::ffi::c_void);
+                // wParam is the EDIT's HDC; lParam is the control handle.
+                let hdc = HDC(wparam.0 as *mut core::ffi::c_void);
                 unsafe {
                     SetTextColor(hdc, COLORREF(0x00FF_FFFF));
                     SetBkColor(hdc, Self::edit_background());
